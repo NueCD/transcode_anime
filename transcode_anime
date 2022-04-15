@@ -1,0 +1,39 @@
+#!/bin/sh
+
+SOURCE=$1
+STARTPOSITION=$2
+DURATION=$3
+
+# FFMPEG options for output
+FFMPEG_CONFIG="-threads auto -async 2 -vcodec mpeg2video -b:v 20000k -f mpegts"
+
+# Added Twitch channel support.
+IS_TWITCH=$(echo "$SOURCE" | grep "/twitch/")
+if [ ! -z "$IS_TWITCH" ]; then
+    streamlink --stdout https://twitch.tv/$(echo $SOURCE | awk -F'/' '{print $NF}' | awk -F'.' '{print $1}') best | ffmpeg -re -i pipe:0 $FFMPEG_CONFIG pipe:1
+    exit
+fi
+
+# Try find sources for audio and subs
+AUDIO="$(ffmpeg -i "$SOURCE" 2>&1 | grep Stream | grep Audio | grep jpn | head -n1 | awk -F'#' '{print $2}' | awk -F'(' '{print $1}' | tr -d '\n')"
+SUBS="$(ffmpeg -i "$SOURCE" 2>&1 | grep Stream | grep Subtitle | grep eng | tail -n1)"
+IS_DVDSUB="$(echo $SUBS | grep hdmv)"
+SUBS="$(echo $SUBS | awk -F'#' '{print $2}' | awk -F'(' '{print $1}' | tr -d '\n')"
+
+# I don't remember what this part does. Probably a fallback.
+[ -z "$AUDIO"] && AUDIO="$(ffmpeg -i "$SOURCE" 2>&1 | grep Stream | grep Audio | head -n1 | awk -F'#' '{print $2}' | awk -F': ' '{print $1}' | tr -d '\n')"
+[ -z "$SUBS"] && SUBS="$(ffmpeg -i "$SOURCE" 2>&1 | grep Stream | grep Subtitle | tail -n1 | awk -F'#' '{print $2}' | awk -F': ' '{print $1}' | tr -d '\n')"
+
+# Extract the subs. We could probably do some ffmpeg magic to hardsub it without extracting it first. This makes long loading times with long videos.
+[ -z "$SUBS" ] && ffmpeg -i "$SOURCE" -y /tmp/subs.ass || ffmpeg -i "$SOURCE" -map $SUBS -y /tmp/subs.ass
+
+# Subs for old ripps need special treatment.
+if [ ! -z "$IS_DVDSUB" ]; then
+    ffmpeg -ss $STARTPOSITION -t $DURATION -i "$SOURCE" -filter_complex "[0:v][$SUBS]overlay[v]" -map "[v]" -c:a 0:a $FFMPEG_CONFIG pipe:1
+    exit
+fi
+
+# Try render video with subs. As well a few fallbacks.
+ffmpeg -ss $STARTPOSITION -t $DURATION -i "$SOURCE" -map 0:v -map $AUDIO -vf "subtitles='/tmp/subs.ass':" $FFMPEG_CONFIG pipe:1 || \
+ffmpeg -ss $STARTPOSITION -t $DURATION -i "$SOURCE" -map 0:v -map 0:a -map 0:s $FFMPEG_CONFIG pipe:1 || \
+ffmpeg -ss $STARTPOSITION -t $DURATION -i "$SOURCE" $FFMPEG_CONFIG pipe:1
